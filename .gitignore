@@ -1,0 +1,20 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuildCFClarify
+.cxx
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Trained model weights are large binary artifacts managed outside git history.
+app/src/main/assets/models/*.tflite
+
+__pycache__/
+*.pyc
+.venv/
