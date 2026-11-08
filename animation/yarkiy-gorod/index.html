@@ -60,29 +60,29 @@ const TAU = Math.PI * 2;
    Катмулла-Рома, поэтому скорость камеры непрерывна на ключах.
    ========================================================================= */
 const CAMK = [ // t, x, y, z, roll
-  [0.0, 420, -1330, -1780, 0],
-  [1.2, 360, -1300, -1700, -.008],
-  [2.0, 220, -1100, -1500, -.012],
+  [0.0, 420, -1250, -1780, 0],
+  [1.2, 360, -1220, -1700, -.008],
+  [2.0, 220, -1040, -1500, -.012],
   [2.6, 130, -620, -1180, .006],
   [3.1, 120, -300, -950, .01],
   [4.0, 330, -360, -1080, 0],
   [5.25, 440, -380, -960, -.02],
   [6.1, 425, -150, -560, .012],
   [7.0, 400, -140, -500, 0],
-  [8.0, 240, -230, -1000, 0],
-  [8.5, 300, -330, -1150, -.02],
-  [9.3, 660, -800, -1300, .035],
-  [10.0, 1150, -380, -1050, 0],
+  [8.0, 200, -250, -860, 0],
+  [8.5, 260, -360, -1000, -.02],
+  [9.3, 660, -820, -1080, .035],
+  [10.0, 1170, -380, -1000, 0],
   [11.0, 1450, -380, -1100, 0],
   [12.0, 1700, -400, -1150, -.012],
   [13.0, 1300, -420, -1200, .01],
   [14.0, 720, -520, -1350, 0],
   [14.6, 380, -760, -1650, 0],
-  [15.3, 250, -960, -1950, 0],
-  [16.0, 400, -840, -2050, 0],
-  [20.0, 450, -810, -1980, 0],
+  [15.3, 250, -860, -1800, 0],
+  [16.0, 420, -720, -1700, 0],
+  [20.0, 450, -700, -1620, 0],
 ];
-const SHAKES = [ [4.0, 16], [4.075, 7], [4.15, 7], [4.225, 7], [4.3, 7], [4.375, 9], [5.25, 7], [10.0, 22], [15.2, 6], [16.0, 12] ];
+const SHAKES = [ [4.0, 16], [4.075, 7], [4.15, 7], [4.225, 7], [4.3, 7], [4.375, 9], [5.25, 7], [10.0, 12], [15.2, 4], [16.0, 5] ];
 function camAt(t) {
   const K = CAMK, n = K.length;
   let v;
@@ -149,7 +149,7 @@ const BIRDS = Array.from({ length: 6 }, (_, i) => ({ dx: -i * 150 - (i % 2) * 60
    ШАРИК: хореография сегментами. y — центр, мир: y вниз, земля y=0.
    ========================================================================= */
 const R = 62;
-const TITLE = { x: 420, y: -1250, size: 240, track: 14 };
+const TITLE = { x: 420, y: -1150, size: 240, track: 14 };
 const TOWER = { x: 690, size: 160, word: 'ЯЗЬЛЕН' }; // снизу вверх
 let HIT_X = -200, BONK_X = 540, towerLay = null, titleA = null, titleB = null;
 let SEG = [];
@@ -177,8 +177,8 @@ function buildSeg() {
     { a: 13.0, b: 13.5, k: 'hop', x0: 1280, x1: 960, h: 150 },
     { a: 13.5, b: 14.0, k: 'hop', x0: 960, x1: 640, h: 150 },
     { a: 14.0, b: 14.5, k: 'hop', x0: 640, x1: 320, h: 140 },
-    { a: 14.5, b: 15.2, k: 'launch', x0: 320, x1: HIT_X, h: 1170 },
-    { a: 15.2, b: 16.0, k: 'drop', x0: HIT_X, x1: 420, h: 1170 },
+    { a: 14.5, b: 15.2, k: 'launch', x0: 320, x1: HIT_X, h: -TITLE.y - 2 * R + 4 },
+    { a: 15.2, b: 16.0, k: 'drop', x0: HIT_X, x1: 420, h: -TITLE.y - 2 * R + 4 },
     { a: 16.0, b: 16.45, k: 'hop', x0: 420, x1: 440, h: 90 },
     { a: 16.45, b: 16.75, k: 'hop', x0: 440, x1: 450, h: 30 },
     { a: 16.75, b: 999, k: 'rest', x: 450 },
@@ -258,7 +258,7 @@ function ballGlow(t) { return .35 + .5 * smooth(6.5, 7.0, t) + .4 * Math.exp(-Ma
    на ранних касаниях, которые город «впитывает».
    ========================================================================= */
 const WAVE = { t: 10.0, x: 1300, y: 0, z: 0, v: 1500 };
-const FLASHES = [[3.0, 0, 0, 230], [3.5, 150, 0, 150], [4.0, 300, 0, 150], [5.25, BONK_X + R, -280, 170], [5.75, 420, 0, 150]];
+const FLASHES = [[3.0, 0, 0, 230], [3.5, 150, 0, 150], [4.0, 300, 0, 150], [5.25, BONK_X + R, -280, 110], [5.75, 420, 0, 150]];
 function colorCircles(t, z) {
   const out = [];
   for (const [ft, fx, fy, fr] of FLASHES) {
@@ -654,7 +654,7 @@ function drawTitle(c, cam, t) {
     if (A.ch === ' ') continue;
     const land = .2 + i * .07;
     if (t < land - .45) continue;
-    let x = A.x, y = TITLE.y, w = 200, sx = 1, sy = 1, ang = 0, face = 'rgba(236,239,243,.96)', side = null, depth = 0, alpha = 1;
+    let x = A.x, y = TITLE.y, w = 200, sx = 1, sy = 1, ang = 0, face = t < 8 ? 'rgba(236,239,243,.96)' : 'rgb(92,97,106)', side = t < 8 ? null : 'rgba(40,44,52,.45)', depth = t < 8 ? 0 : 5, alpha = 1;
     // падение каплями
     if (t < land) { const u = (t - (land - .45)) / .45; y = TITLE.y - 900 * (1 - u * u); sy = 1.25; sx = .85; alpha = smooth(0, .4, u); }
     else { const d = t - land; sy = 1 - .16 * Math.exp(-10 * d) * Math.cos(18 * d); sx = 1 / Math.sqrt(sy); }
@@ -667,7 +667,7 @@ function drawTitle(c, cam, t) {
         const d = t - 15.2, dir = (i - 2);
         const gx = A.x + (dir * 320 + (hr(i) - .5) * 160) * d, gy = TITLE.y + (-1500 - hr(i + 3) * 500) * d + .5 * 900 * d * d;
         const ga = (dir || .6) * 2.2 * d, ka = 1 - smooth(.15, .85, d);
-        if (ka > 0) { c.globalAlpha = ka; glyph(c, A.ch, gx, gy, TITLE.size, 200, 'rgba(210,214,220,1)', null, 0, ga, 1 - .3 * d, 1 - .3 * d); c.globalAlpha = 1; }
+        if (ka > 0) { c.globalAlpha = ka; glyph(c, A.ch, gx, gy, TITLE.size, 200, 'rgb(92,97,106)', 'rgba(40,44,52,.45)', 5, ga, 1 - .3 * d, 1 - .3 * d); c.globalAlpha = 1; }
         const ta = 15.28 + .12 * i, e = elastic(clamp((t - ta) / .6, 0, 1));
         if (e > 0) {
           const hue = HUES_T[i], ww = lerp(500, 900, smooth(ta, ta + .3, t));
@@ -682,7 +682,7 @@ function drawTitle(c, cam, t) {
         x = lerp(A.x, B.x, f); w = lerp(200, 900, f);
         const pop = t > tg ? .14 * Math.exp(-6 * (t - tg)) * Math.sin(16 * (t - tg)) : 0; sx *= 1 + pop; sy *= 1 - pop;
         y += idleBob(t, i);
-        face = mixc([236, 239, 243], hslRgb(HUES_T[i], .92, .62), f); side = hsl(HUES_T[i], 75, 38, f); depth = 16 * f;
+        face = mixc([92, 97, 106], hslRgb(HUES_T[i], .92, .62), f); side = hsl(HUES_T[i], 75, 38, f); depth = 16 * f;
       }
     }
     if (t > 15.2 && t < 15.9 && i >= 6) { const d = t - 15.2; y -= 22 * Math.exp(-6 * d) * Math.sin(14 * d - (i - 6) * .5); }
@@ -708,7 +708,7 @@ function eventsInit() {
   addEv(8.5, 0, 0, 0, 'paint', 16, 23); addEv(10.0, 1300, 0, 0, 'paint', 46, 24);
   for (let i = 1; i < BOUNCE_LIGHT.length; i++) addEv(BOUNCE_LIGHT[i], ballRaw(BOUNCE_LIGHT[i]).x, 0, 0, 'paint', 14, 30 + i);
   for (let k = 0; k < 6; k++) addEv(towerPop(k), TOWER.x, towerLay[k].base - 60, 0, 'paint', 12, 50 + k);
-  addEv(15.2, HIT_X, -1250, 0, 'spark', 34, 60); addEv(16.0, 420, 0, 0, 'paint', 30, 61);
+  addEv(15.2, HIT_X, TITLE.y, 0, 'spark', 34, 60); addEv(16.0, 420, 0, 0, 'paint', 30, 61);
 }
 function drawParticles(c, cam, t) {
   setPlane(c, cam, 0);
