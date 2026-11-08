@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Светлая бумага и тушь -->
+    <color name="paper">#F4EFE6</color>
+    <color name="ink">#23201C</color>
+    <color name="ink_soft">#6B6359</color>
+</resources>

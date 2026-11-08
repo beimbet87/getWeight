@@ -3,7 +3,6 @@ package com.getweight.cv
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
@@ -11,11 +10,14 @@ import androidx.core.content.ContextCompat
 import com.getweight.cv.camera.CameraController
 import com.getweight.cv.morphometry.BreedCondition
 import com.getweight.cv.pipeline.WeightPipeline
+import com.getweight.cv.ui.InkCameraOverlayView
+import com.getweight.cv.ui.InkResultView
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
-    private lateinit var resultText: TextView
+    private lateinit var overlayView: InkCameraOverlayView
+    private lateinit var resultView: InkResultView
     private lateinit var cameraController: CameraController
     private lateinit var pipeline: WeightPipeline
 
@@ -24,7 +26,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         previewView = findViewById(R.id.previewView)
-        resultText = findViewById(R.id.resultText)
+        overlayView = findViewById(R.id.overlayView)
+        resultView = findViewById(R.id.resultView)
 
         pipeline = WeightPipeline(this)
 
@@ -38,17 +41,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCamera() {
-        cameraController = CameraController(this, this, previewView) { bitmap, _ ->
+        cameraController = CameraController(this, this, previewView) { bitmap, rotationDegrees ->
             val result = pipeline.processFrame(bitmap, BreedCondition.DAIRY_AVERAGE)
+            val keypoints = pipeline.lastKeypoints
+            val rejectionRate = pipeline.rejectionRate()
+            val frameWidth = bitmap.width
+            val frameHeight = bitmap.height
             runOnUiThread {
-                resultText.text = if (result != null) {
-                    "Вес: %.1f кг (±%.1f), кадров: %d, метод: %s".format(
-                        result.weightKg, result.confidenceIntervalKg, result.framesUsed, result.method
-                    )
+                overlayView.showKeypoints(keypoints, frameWidth, frameHeight, rotationDegrees)
+                if (result != null) {
+                    resultView.showResult(result)
                 } else {
-                    "Кадр отбракован (маркер/поза не валидны). Отбраковка: %.0f%%".format(
-                        pipeline.rejectionRate() * 100
-                    )
+                    resultView.showRejected(rejectionRate)
                 }
             }
         }

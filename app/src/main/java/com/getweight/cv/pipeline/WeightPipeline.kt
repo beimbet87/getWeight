@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import com.getweight.cv.calibration.ArucoCalibrator
 import com.getweight.cv.filter.KalmanFilter1D
 import com.getweight.cv.ml.KeypointDetector
+import com.getweight.cv.model.BodyLandmark
+import com.getweight.cv.model.Keypoint
 import com.getweight.cv.model.WeightResult
 import com.getweight.cv.morphometry.BodyMeasurements
 import com.getweight.cv.morphometry.BreedCondition
@@ -38,12 +40,21 @@ class WeightPipeline(context: Context) {
     private var processedFrames = 0
 
     /**
+     * Ключевые точки последнего обработанного кадра (для отрисовки скелета),
+     * или `null`, если до детекции дело не дошло (например, нет маркера).
+     */
+    @Volatile
+    var lastKeypoints: Map<BodyLandmark, Keypoint>? = null
+        private set
+
+    /**
      * Обрабатывает один кадр. Возвращает `null`, если кадр отбракован
      * (нет маркера в кадре, невалидная поза/ракурс, или оценка — выброс
      * относительно уже принятых кадров).
      */
     fun processFrame(bitmap: Bitmap, condition: BreedCondition): WeightResult? {
         processedFrames++
+        lastKeypoints = null
 
         val rgbMat = Mat()
         val gray = Mat()
@@ -54,6 +65,7 @@ class WeightPipeline(context: Context) {
             ?: return reject() // нет маркера в кадре -> нет надёжного масштаба
 
         val keypoints = keypointDetector.detect(bitmap)
+        lastKeypoints = keypoints
 
         val validation = poseValidator.validate(keypoints, calibration.cameraTiltDeg)
         if (validation is PoseValidator.ValidationResult.Rejected) {

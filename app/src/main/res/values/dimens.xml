@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Отступ превью камеры внутри слоя с рамкой, нарисованной пером -->
+    <dimen name="ink_frame_inset">14dp</dimen>
+</resources>

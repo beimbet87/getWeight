@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">GetWeight</string>
+    <string name="hint_point_camera">Наведите камеру на животное и ArUco-маркер</string>
+    <string name="status_frame_rejected">кадр отбракован · всего отбраковано %1$d%%</string>
+    <string name="status_frames_used">кадров в оценке: %1$d</string>
+    <string name="unit_kg">кг</string>
+    <string name="meta_line">± %1$.1f кг · %2$s</string>
+    <string name="method_ml">ML-регрессия</string>
+    <string name="method_formula">зоотехническая формула</string>
 </resources>

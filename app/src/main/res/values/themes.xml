@@ -1,3 +1,8 @@
 <resources>
-    <style name="Theme.GetWeight" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+    <!-- Всегда светлая бумага: рисунок тушью не инвертируется в тёмной теме. -->
+    <style name="Theme.GetWeight" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:statusBarColor">@color/paper</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>
