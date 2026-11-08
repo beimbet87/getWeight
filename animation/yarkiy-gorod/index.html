@@ -1,0 +1,1035 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Яркий город</title>
+<style>
+  @font-face { font-family: 'Unbounded'; src: url(fonts/unbounded-cyrillic.woff2) format('woff2');
+    font-weight: 200 900; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: 'Unbounded'; src: url(fonts/unbounded-latin.woff2) format('woff2');
+    font-weight: 200 900; unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212; }
+  html, body { margin: 0; height: 100%; background: #0e0f12; overflow: hidden; font-family: 'Unbounded', sans-serif; }
+  canvas { position: fixed; inset: 0; margin: auto; width: min(100vw, 177.78vh); height: min(56.25vw, 100vh); }
+  #ui { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; cursor: pointer;
+    background: rgba(10,10,14,.55); color: #fff; transition: opacity .4s; }
+  #ui.hide { opacity: 0; pointer-events: none; }
+  #ui button { font: 600 clamp(16px, 2vw, 22px) 'Unbounded', sans-serif; color: #2a1840; background: #fff;
+    border: 0; border-radius: 999px; padding: 16px 34px; cursor: pointer; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+  #bar { position: fixed; left: 0; bottom: 0; height: 3px; width: 0; background: linear-gradient(90deg,#ff5d8f,#ffb547,#ffe45c,#5fe0a6,#58c4ff,#a985ff); }
+  body.export #ui, body.export #bar { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui"><button id="play">▶ Смотреть со звуком</button></div>
+<div id="bar"></div>
+<audio id="music" src="soundtrack.m4a" preload="auto"></audio>
+<script>
+'use strict';
+/* =========================================================================
+   «Яркий город» — 20 с. Детерминированный таймлайн: renderAt(t) рисует кадр
+   только по времени t (без накопленного состояния), поэтому кадры можно
+   рендерить в любом порядке и параллельно.
+   ========================================================================= */
+const W = 1920, H = 1080, F = 1000, DUR = 20;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
+const LAY = { sky: mk(), far: mk(), mid: mk(), facade: mk(), fg: mk() };
+const TMP = mk(), ACC = mk(), BLUR = mk();
+const tctx = TMP.getContext('2d'), actx = ACC.getContext('2d'), bctx = BLUR.getContext('2d');
+const mctx = mk().getContext('2d');
+
+/* ---------- утилиты ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, f) => a + (b - a) * f;
+const smooth = (e0, e1, x) => { const u = clamp((x - e0) / (e1 - e0), 0, 1); return u * u * (3 - 2 * u); };
+const easeIO = u => u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+const easeOut3 = u => 1 - Math.pow(1 - clamp(u, 0, 1), 3);
+const elastic = x => x <= 0 ? 0 : x >= 1 ? 1 : Math.pow(2, -10 * x) * Math.sin((x * 10 - .75) * (2 * Math.PI / 3)) + 1;
+const hr = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+function rng(seed) { let a = seed | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+const grey = (l, a = 1) => `hsla(215,7%,${l}%,${a})`;
+const TAU = Math.PI * 2;
+
+/* =========================================================================
+   КАМЕРА: 2.5D с перспективой. Плоскость глубины z проецируется аффинно:
+   s = F/(z - cam.z). Ключи интерполируются сплайном Эрмита с касательными
+   Катмулла-Рома, поэтому скорость камеры непрерывна на ключах.
+   ========================================================================= */
+const CAMK = [ // t, x, y, z, roll
+  [0.0, 420, -1330, -1780, 0],
+  [1.2, 360, -1300, -1700, -.008],
+  [2.0, 220, -1100, -1500, -.012],
+  [2.6, 130, -620, -1180, .006],
+  [3.1, 120, -300, -950, .01],
+  [4.0, 330, -360, -1080, 0],
+  [5.25, 440, -380, -960, -.02],
+  [6.1, 425, -150, -560, .012],
+  [7.0, 400, -140, -500, 0],
+  [8.0, 240, -230, -1000, 0],
+  [8.5, 300, -330, -1150, -.02],
+  [9.3, 660, -800, -1300, .035],
+  [10.0, 1150, -380, -1050, 0],
+  [11.0, 1450, -380, -1100, 0],
+  [12.0, 1700, -400, -1150, -.012],
+  [13.0, 1300, -420, -1200, .01],
+  [14.0, 720, -520, -1350, 0],
+  [14.6, 380, -760, -1650, 0],
+  [15.3, 250, -960, -1950, 0],
+  [16.0, 400, -840, -2050, 0],
+  [20.0, 450, -810, -1980, 0],
+];
+const SHAKES = [ [4.0, 16], [4.075, 7], [4.15, 7], [4.225, 7], [4.3, 7], [4.375, 9], [5.25, 7], [10.0, 22], [15.2, 6], [16.0, 12] ];
+function camAt(t) {
+  const K = CAMK, n = K.length;
+  let v;
+  if (t <= K[0][0]) v = K[0].slice(1);
+  else if (t >= K[n - 1][0]) v = K[n - 1].slice(1);
+  else {
+    let i = 0; while (K[i + 1][0] < t) i++;
+    const k0 = K[i], k1 = K[i + 1], dt = k1[0] - k0[0], u = (t - k0[0]) / dt;
+    const tan = (j, c) => (j === 0 || j === n - 1) ? 0 : (K[j + 1][c] - K[j - 1][c]) / (K[j + 1][0] - K[j - 1][0]);
+    const u2 = u * u, u3 = u2 * u;
+    const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
+    v = [1, 2, 3, 4].map(c => h00 * k0[c] + h10 * dt * tan(i, c) + h01 * k1[c] + h11 * dt * tan(i + 1, c));
+  }
+  let amp = 0;
+  for (const [ts, a] of SHAKES) if (t >= ts) amp += a * Math.exp(-(t - ts) * 9);
+  return { x: v[0], y: v[1], z: v[2], roll: v[3] + amp * .0007 * Math.sin(t * 59),
+    sx: amp * (Math.sin(t * 73) + .5 * Math.sin(t * 131)), sy: amp * (Math.cos(t * 67) + .5 * Math.sin(t * 149 + 1)) };
+}
+function planeM(cam, z) {
+  const s = F / (z - cam.z);
+  return new DOMMatrix().translate(W / 2 + cam.sx, H / 2 + cam.sy).rotate(cam.roll * 180 / Math.PI).scale(s).translate(-cam.x, -cam.y);
+}
+function setPlane(c, cam, z) { c.setTransform(planeM(cam, z)); return F / (z - cam.z); }
+function proj(cam, x, y, z) {
+  const s = F / (z - cam.z), X = (x - cam.x) * s, Y = (y - cam.y) * s, co = Math.cos(cam.roll), si = Math.sin(cam.roll);
+  return [W / 2 + cam.sx + X * co - Y * si, H / 2 + cam.sy + X * si + Y * co, s];
+}
+// Глубина резкости: кружок рассеяния растёт с удалением от плоскости фокуса z=0.
+function coc(cam, z) {
+  const d = z - cam.z, df = -cam.z;
+  const A = lerp(7, 15, smooth(-760, -500, cam.z));
+  return clamp(A * Math.abs(d - df) / d, 0, 20);
+}
+
+/* =========================================================================
+   ГОРОД (генерация с фиксированным seed)
+   ========================================================================= */
+const PAL = [8, 24, 44, 150, 172, 198, 255, 285, 330];
+const R0 = rng(2026);
+const pick = (r, a) => a[Math.floor(r() * a.length)];
+function genRow(x0, x1, wMin, wMax, hMin, hMax, gap, r) {
+  const out = []; let x = x0;
+  while (x < x1) {
+    const w = lerp(wMin, wMax, r()), h = lerp(hMin, hMax, r());
+    out.push({ x, w, h, hue: pick(r, PAL), l: r(), seed: Math.floor(r() * 1e6), type: Math.floor(r() * 4) });
+    x += w + gap * r();
+  }
+  return out;
+}
+const FAR = genRow(-7200, 8800, 520, 1050, 1400, 2800, 60, R0);
+const MID = genRow(-4300, 5800, 320, 620, 900, 1750, 40, R0);
+const FAC = genRow(-3300, 4600, 280, 470, 430, 930, 0, R0);
+for (const b of FAC) {
+  b.cols = Math.max(2, Math.floor((b.w - 60) / 80)); b.rows = Math.max(2, Math.floor((b.h - 210) / 105));
+  b.lit = Array.from({ length: b.cols * b.rows }, (_, i) => hr(b.seed + i * 7.3) < .3);
+  b.box = Array.from({ length: b.cols * b.rows }, (_, i) => hr(b.seed + i * 3.1) < .45);
+}
+const CLOUDS = Array.from({ length: 9 }, (_, i) => ({ x: -5200 + i * 1500 + R0() * 600, y: -3700 + R0() * 1200, s: lerp(1.2, 2.2, R0()), v: lerp(14, 30, R0()) }));
+const LAMPS = [-1450, -350, 900, 2150, 3350];
+const PLANTERS = []; for (let x = -2400; x < 4000; x += 330) PLANTERS.push({ x: x + hr(x) * 60, seed: x });
+const BIRDS = Array.from({ length: 6 }, (_, i) => ({ dx: -i * 150 - (i % 2) * 60, dy: (i % 3) * 70 - i * 18, ph: i * 1.7 }));
+
+/* =========================================================================
+   ШАРИК: хореография сегментами. y — центр, мир: y вниз, земля y=0.
+   ========================================================================= */
+const R = 62;
+const TITLE = { x: 420, y: -1250, size: 240, track: 14 };
+const TOWER = { x: 690, size: 160, word: 'ЯЗЬЛЕН' }; // снизу вверх
+let HIT_X = -200, BONK_X = 540, towerLay = null, titleA = null, titleB = null;
+let SEG = [];
+function buildSeg() {
+  SEG = [
+    { a: -99, b: 1.0, k: 'hold', x: -60, y: -2300 - R },
+    { a: 1.0, b: 3.0, k: 'fall', x0: -60, x1: 0, y0: -2300 },
+    { a: 3.0, b: 3.5, k: 'hop', x0: 0, x1: 150, h: 110 },
+    { a: 3.5, b: 4.0, k: 'hop', x0: 150, x1: 300, h: 100 },
+    { a: 4.0, b: 4.4, k: 'hop', x0: 300, x1: 255, h: 45 },
+    { a: 4.4, b: 4.75, k: 'hold', x: 255, y: -R, antic: .22 },
+    { a: 4.75, b: 5.25, k: 'bonkUp', x0: 255, x1: BONK_X, h: 240 },
+    { a: 5.25, b: 5.75, k: 'bonkDown', x0: BONK_X, x1: 420, h: 240 },
+    { a: 5.75, b: 6.05, k: 'hop', x0: 420, x1: 420, h: 30 },
+    { a: 6.05, b: 7.0, k: 'hold', x: 420, y: -R },
+    { a: 7.0, b: 8.0, k: 'roll', x0: 420, x1: 0 },
+    { a: 8.0, b: 8.5, k: 'charge', x: 0 },
+    { a: 8.5, b: 10.0, k: 'big', x0: 0, x1: 1300, h: 880 },
+    { a: 10.0, b: 10.5, k: 'hop', x0: 1300, x1: 1480, h: 170 },
+    { a: 10.5, b: 11.0, k: 'hop', x0: 1480, x1: 1660, h: 160 },
+    { a: 11.0, b: 11.5, k: 'hop', x0: 1660, x1: 1820, h: 150 },
+    { a: 11.5, b: 12.0, k: 'hop', x0: 1820, x1: 1920, h: 130 },
+    { a: 12.0, b: 12.5, k: 'hop', x0: 1920, x1: 1600, h: 150 },
+    { a: 12.5, b: 13.0, k: 'hop', x0: 1600, x1: 1280, h: 150 },
+    { a: 13.0, b: 13.5, k: 'hop', x0: 1280, x1: 960, h: 150 },
+    { a: 13.5, b: 14.0, k: 'hop', x0: 960, x1: 640, h: 150 },
+    { a: 14.0, b: 14.5, k: 'hop', x0: 640, x1: 320, h: 140 },
+    { a: 14.5, b: 15.2, k: 'launch', x0: 320, x1: HIT_X, h: 1170 },
+    { a: 15.2, b: 16.0, k: 'drop', x0: HIT_X, x1: 420, h: 1170 },
+    { a: 16.0, b: 16.45, k: 'hop', x0: 420, x1: 440, h: 90 },
+    { a: 16.45, b: 16.75, k: 'hop', x0: 440, x1: 450, h: 30 },
+    { a: 16.75, b: 999, k: 'rest', x: 450 },
+  ];
+}
+const CONTACTS = [
+  { t: 3.0, s: .48 }, { t: 3.5, s: .3 }, { t: 4.0, s: .3 }, { t: 4.4, s: .2 },
+  { t: 4.75, s: .22, noPre: 1 }, { t: 5.25, s: .42, n: [-1, 0] }, { t: 5.75, s: .3 }, { t: 6.05, s: .12 },
+  { t: 8.5, s: .4, noPre: 1 }, { t: 10.0, s: .52 },
+  { t: 10.5, s: .3 }, { t: 11.0, s: .3 }, { t: 11.5, s: .3 }, { t: 12.0, s: .3 }, { t: 12.5, s: .3 },
+  { t: 13.0, s: .3 }, { t: 13.5, s: .3 }, { t: 14.0, s: .3 }, { t: 14.5, s: .3 },
+  { t: 15.2, s: .36, n: [0, 1] }, { t: 16.0, s: .42 }, { t: 16.45, s: .2 }, { t: 16.75, s: .1 },
+].map(c => ({ n: [0, -1], ...c }));
+const BOUNCE_LIGHT = [10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5, 14.0, 14.5];
+
+function segAt(t) { for (const s of SEG) if (t < s.b) return s; return SEG[SEG.length - 1]; }
+function ballRaw(t) {
+  const s = segAt(t), u = clamp((t - s.a) / (s.b - s.a), 0, 1);
+  let x, hgt = 0, extra = 0;
+  switch (s.k) {
+    case 'hold': x = s.x; if (s.y < -R - 1) return { x, y: s.y, extra: 0 }; if (s.antic) extra = s.antic * smooth(s.b - .3, s.b, t); break;
+    case 'fall': x = lerp(s.x0, s.x1, u); hgt = -s.y0 * (1 - u * u); break;
+    case 'hop': x = lerp(s.x0, s.x1, u); hgt = 4 * s.h * u * (1 - u); break;
+    case 'bonkUp': x = lerp(s.x0, s.x1, u); hgt = s.h * (1 - (1 - u) * (1 - u)); break;
+    case 'bonkDown': x = lerp(s.x0, s.x1, easeOut3(u) * .6 + u * .4); hgt = s.h * (1 - u * u); break;
+    case 'roll': x = lerp(s.x0, s.x1, easeIO(u)); break;
+    case 'charge': x = s.x + (u > .4 ? Math.sin(t * 95) * 2.2 * (u - .4) / .6 : 0); extra = .42 * easeIO(u); break;
+    case 'big': { const v = u + .6 * Math.sin(TAU * u) / TAU; x = lerp(s.x0, s.x1, v); hgt = 4 * s.h * v * (1 - v); break; }
+    case 'launch': x = lerp(s.x0, s.x1, easeOut3(u) * .5 + u * .5); hgt = s.h * (1 - (1 - u) * (1 - u)); break;
+    case 'drop': x = lerp(s.x0, s.x1, u); hgt = s.h * (1 - u) * (1 + .4 * u); break;
+    case 'rest': x = s.x; extra = .035 * (1 - Math.cos((t - 16.75) * 3.4)) * smooth(16.75, 17.4, t); break;
+  }
+  return { x, y: -R - hgt, extra };
+}
+// Время, когда шарик проходил высоту титра (буквы расступаются)
+let TITLE_PASS = 2.27;
+// Сглаженная для замедления «внутренняя» скорость времени (speed ramp вокруг вершины прыжка)
+function storyTime(t) {
+  const t0 = 8.95, t1 = 9.75, a = .6, T = t1 - t0;
+  if (t <= t0) return t;
+  const e = Math.min(t, t1) - t0;
+  const lost = a * (e / 2 - T / (4 * Math.PI) * Math.sin(TAU * e / T));
+  return t - lost;
+}
+
+/* ---------- деформация шарика (упругие касания) ---------- */
+function ballState(t) {
+  const b = ballRaw(t), nb = ballRaw(t + .008);
+  const vx = (nb.x - b.x) / .008, vy = (nb.y - b.y) / .008;
+  let dg = b.extra, dw = 0, offx = 0, offy = b.extra * R;
+  for (const c of CONTACTS) {
+    const dt = t - c.t; if (dt < -.12 || dt > 1.2) continue;
+    let d;
+    if (dt < 0) { if (c.noPre) continue; d = c.s * Math.exp(-((dt / .03) ** 2)); }
+    else d = c.s * Math.exp(-7 * dt) * Math.cos(22 * dt);
+    if (c.n[0]) dw += d; else dg += (c.n[1] > 0 ? d : d);
+    if (d > 0 && dt < .08) { offx -= c.n[0] * R * d; offy -= c.n[1] * R * d; }
+  }
+  return { x: b.x + offx, y: b.y + offy, rx: b.x, ry: b.y, vx, vy, dg: clamp(dg, -.3, .5), dw: clamp(dw, -.3, .5), spin: b.x / R };
+}
+function faceMode(t) {
+  if (t < 3.0) return 'wow';
+  if (t < 4.0) return 'normal';
+  if (t < 4.75) return 'wow';
+  if (t < 5.25) return 'focus';
+  if (t < 5.6) return 'ouch';
+  if (t < 6.5) return 'sad';
+  if (t < 6.85) return 'wow';
+  if (t < 8.5) return 'focus';
+  if (t < 10.0) return 'wow';
+  return 'happy';
+}
+function ballGlow(t) { return .35 + .5 * smooth(6.5, 7.0, t) + .4 * Math.exp(-Math.max(0, t - 8.5) * 4) * (t > 8.5 ? 1 : 0) - .3 * smooth(10.0, 11.5, t); }
+
+/* =========================================================================
+   ЦВЕТ: волна-сфера от приземления (1300,0,0) + короткие вспышки
+   на ранних касаниях, которые город «впитывает».
+   ========================================================================= */
+const WAVE = { t: 10.0, x: 1300, y: 0, z: 0, v: 1500 };
+const FLASHES = [[3.0, 0, 0, 230], [3.5, 150, 0, 150], [4.0, 300, 0, 150], [5.25, BONK_X + R, -280, 170], [5.75, 420, 0, 150]];
+function colorCircles(t, z) {
+  const out = [];
+  for (const [ft, fx, fy, fr] of FLASHES) {
+    const d = t - ft; if (d < 0 || d > .75) continue;
+    const r = fr * Math.sin(Math.PI * d / .75), rr = r * r - z * z;
+    if (rr > 0) out.push([fx, fy, Math.sqrt(rr)]);
+  }
+  const R2 = (WAVE.v * (t - WAVE.t)) ** 2 - (z - WAVE.z) ** 2;
+  if (t > WAVE.t && R2 > 0) out.push([WAVE.x, WAVE.y, Math.sqrt(R2), 'wave']);
+  return out;
+}
+function covered(circles, cam, z) {
+  // покрывает ли круг весь видимый кадр на этой плоскости
+  const d = z - cam.z, half = Math.hypot(W, H) / 2 * d / F + 60;
+  return circles.some(([x, y, r]) => Math.hypot(x - cam.x, y - cam.y) + half < r);
+}
+function reachTime(x, y, z) { return WAVE.t + Math.hypot(x - WAVE.x, y - WAVE.y, z - WAVE.z) / WAVE.v; }
+
+/* =========================================================================
+   ОТРИСОВКА СЛОЁВ
+   ========================================================================= */
+function cloudShape(c, x, y, s) {
+  c.beginPath();
+  [[0, 0, 160], [170, -60, 140], [330, 10, 150], [160, 40, 140], [-150, 40, 110], [470, 50, 100]].forEach(([dx, dy, r]) => {
+    c.moveTo(x + dx * s + r * s, y + dy * s); c.arc(x + dx * s, y + dy * s, r * s, 0, TAU);
+  });
+  c.fill();
+}
+function skyGrad(c, col, t) {
+  const g = c.createLinearGradient(0, 0, 0, H);
+  if (!col) { g.addColorStop(0, '#565b62'); g.addColorStop(.55, '#80858c'); g.addColorStop(1, '#a3a7ad'); }
+  else {
+    const f = smooth(15.2, 19, t);
+    g.addColorStop(0, f ? mixc([66, 150, 255], [92, 84, 220], f) : 'rgb(66,150,255)');
+    g.addColorStop(.55, mixc([150, 210, 255], [255, 156, 196], f));
+    g.addColorStop(1, mixc([255, 236, 200], [255, 206, 140], f));
+  }
+  return g;
+}
+function mixc(a, b, f) { return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * f)).join(',')})`; }
+
+function drawSky(c, cam, t) {
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W, H);
+  c.fillStyle = skyGrad(c, false, t); c.fillRect(0, 0, W, H);
+  const circ = colorCircles(t, 1800);
+  if (circ.length) {
+    const [p0, p1] = proj(cam, WAVE.x, 0, 1800);
+    const r = circ[circ.length - 1][2] * F / (1800 - cam.z);
+    if (circ[circ.length - 1][3]) {
+      c.save(); c.beginPath(); c.arc(p0, p1, r, 0, TAU); c.clip();
+      c.fillStyle = skyGrad(c, true, t); c.fillRect(0, 0, W, H);
+      // мягкое солнце
+      const sg = c.createRadialGradient(W * .82, H * .1, 10, W * .82, H * .1, 900);
+      const k = .55 + .35 * smooth(15, 19, t);
+      sg.addColorStop(0, `rgba(255,246,214,${k})`); sg.addColorStop(.25, `rgba(255,220,150,${k * .5})`); sg.addColorStop(1, 'rgba(255,220,150,0)');
+      c.fillStyle = sg; c.fillRect(0, 0, W, H);
+      c.restore();
+    }
+  }
+  // облака на плоскости 3500
+  const zc = 3500, col = t > reachTime(1300, -3000, zc);
+  setPlane(c, cam, zc);
+  const tt = storyTime(t);
+  for (const cl of CLOUDS) {
+    const rt = reachTime(cl.x + tt * cl.v, cl.y, zc);
+    const k = smooth(rt - .3, rt + .5, t);
+    const f = smooth(15.2, 19, t);
+    c.fillStyle = k > 0 ? mixc([126, 132, 140], [255, Math.round(lerp(255, 222, f)), Math.round(lerp(255, 232, f))], k) : '#7e848c';
+    c.globalAlpha = .96;
+    cloudShape(c, cl.x + tt * cl.v, cl.y, cl.s);
+    c.fillStyle = k > 0 ? mixc([96, 101, 108], [Math.round(lerp(220, 255, f)), Math.round(lerp(236, 190, f)), Math.round(lerp(255, 214, f))], k) : '#60656c';
+    c.globalAlpha = .55; c.beginPath(); c.ellipse(cl.x + tt * cl.v + 160 * cl.s, cl.y + 120 * cl.s, 420 * cl.s, 60 * cl.s, 0, 0, TAU); c.fill();
+    c.globalAlpha = 1;
+  }
+}
+
+function drawFar(c, cam, t, col) {
+  for (const b of FAR) {
+    c.fillStyle = col ? hsl(b.hue, 38, 80 + b.l * 6) : grey(68 + b.l * 8);
+    c.fillRect(b.x, -b.h, b.w, b.h);
+    if (b.type === 0) c.fillRect(b.x + b.w * .45, -b.h - 260, 18, 260);
+    if (b.type === 1) { c.beginPath(); c.moveTo(b.x, -b.h); c.lineTo(b.x + b.w / 2, -b.h - b.w * .3); c.lineTo(b.x + b.w, -b.h); c.fill(); }
+    c.fillStyle = col ? hsl(b.hue, 30, 74 + b.l * 6) : grey(63 + b.l * 8);
+    for (let x = b.x + 60; x < b.x + b.w - 60; x += 110) c.fillRect(x, -b.h + 80, 34, b.h - 160);
+  }
+}
+
+function drawMid(c, cam, t, col) {
+  const tt = storyTime(t);
+  for (const b of MID) {
+    const bounce = 1 + .035 * cityBounce(t, b.x + b.w / 2, .7);
+    c.save(); c.translate(b.x + b.w / 2, 0); c.scale(1 / Math.sqrt(bounce), bounce); c.translate(-(b.x + b.w / 2), 0);
+    c.fillStyle = col ? hsl(b.hue, 45, 70 + b.l * 8) : grey(54 + b.l * 10);
+    c.fillRect(b.x, -b.h, b.w, b.h);
+    c.fillStyle = col ? hsl(b.hue, 40, 60 + b.l * 8) : grey(48 + b.l * 10);
+    c.fillRect(b.x - 10, -b.h, b.w + 20, 26);
+    if (b.type === 2) c.fillRect(b.x + b.w * .2, -b.h - 120, b.w * .6, 120);
+    for (let y = -b.h + 90; y < -60; y += 95) for (let x = b.x + 40; x < b.x + b.w - 50; x += 70) {
+      const lit = col && hr(x * .37 + y * .11 + b.seed) < .35;
+      c.fillStyle = col ? (lit ? '#fff0b8' : hsl(b.hue, 35, 56 + b.l * 6)) : grey(42 + b.l * 8);
+      c.fillRect(x, y, 30, 46);
+    }
+    c.restore();
+  }
+  // дождь средней глубины
+  drawRain(c, t, 600, 520, 1.6, col);
+  // птицы финала
+  if (t > 16.2) {
+    const k = t - 16.2;
+    c.strokeStyle = col ? '#3b2d63' : '#333'; c.lineWidth = 9; c.lineCap = 'round'; c.lineJoin = 'round';
+    for (const bd of BIRDS) {
+      const x = -1200 + k * 520 + bd.dx, y = -1700 + bd.dy - k * 60, f = Math.sin(t * 10 + bd.ph) * 30;
+      c.beginPath(); c.moveTo(x - 48, y - f); c.quadraticCurveTo(x - 18, y - 22, x, y); c.quadraticCurveTo(x + 18, y - 22, x + 48, y - f); c.stroke();
+    }
+  }
+}
+
+function cityBounce(t, x, amp) {
+  let v = 0;
+  const d = t - 16.0 - Math.abs(x - 420) / 2600;
+  if (d > 0) v += amp * Math.exp(-4.5 * d) * Math.sin(15 * d);
+  return v;
+}
+function popOf(t, b) {
+  let v = 0;
+  for (const tb of BOUNCE_LIGHT) {
+    const bx = ballRaw(tb).x;
+    if (bx >= b.x - 20 && bx < b.x + b.w + 20) { const d = t - tb; if (d > 0) v += Math.exp(-6 * d) * Math.sin(17 * d); }
+  }
+  return v;
+}
+function lightTime(b) {
+  let lt = 99;
+  for (const tb of BOUNCE_LIGHT) { const bx = ballRaw(tb).x; if (bx >= b.x - 20 && bx < b.x + b.w + 20) lt = Math.min(lt, tb); }
+  return lt;
+}
+
+function drawFacade(c, cam, t, col) {
+  for (const b of FAC) {
+    const cxb = b.x + b.w / 2;
+    const k = 1 + .07 * popOf(t, b) + .05 * cityBounce(t, cxb, 1);
+    c.save(); c.translate(cxb, 0); c.scale(1 / Math.sqrt(k), k); c.translate(-cxb, 0);
+    const L = b.l;
+    const body = col ? hsl(b.hue, 62, 64 + L * 10) : grey(36 + L * 18);
+    const dark = col ? hsl(b.hue, 50, 48 + L * 8) : grey(27 + L * 14);
+    const trim = col ? hsl(b.hue, 40, 90) : grey(46 + L * 16);
+    // крыша
+    c.fillStyle = dark;
+    if (b.type === 1) { c.beginPath(); c.moveTo(b.x - 14, -b.h); c.lineTo(cxb, -b.h - b.w * .32); c.lineTo(b.x + b.w + 14, -b.h); c.fill(); }
+    if (b.type === 2) { c.fillRect(b.x + b.w * .15, -b.h - 60, b.w * .7, 60); c.fillRect(b.x + b.w * .3, -b.h - 110, b.w * .4, 50); }
+    if (b.type === 3) {
+      c.fillRect(b.x + b.w * .62, -b.h - 150, 20, 150);
+      c.fillRect(b.x + b.w * .18, -b.h - 90, 90, 90); c.beginPath(); c.moveTo(b.x + b.w * .18 - 10, -b.h - 90); c.lineTo(b.x + b.w * .18 + 45, -b.h - 130); c.lineTo(b.x + b.w * .18 + 100, -b.h - 90); c.fill();
+      if (col) { c.fillStyle = Math.sin(t * 6 + b.seed) > 0 ? '#ff4a5e' : '#8c2333'; c.beginPath(); c.arc(b.x + b.w * .62 + 10, -b.h - 156, 11, 0, TAU); c.fill(); }
+    }
+    // тело
+    c.fillStyle = body; c.fillRect(b.x, -b.h, b.w, b.h);
+    c.fillStyle = trim; c.fillRect(b.x - 10, -b.h, b.w + 20, 22);
+    c.fillStyle = dark; c.fillRect(b.x, -175, b.w, 14); c.fillRect(b.x, -40, b.w, 40);
+    // окна
+    const ww = 46, wh = 70, sx = b.x + (b.w - (b.cols - 1) * 80 - ww) / 2;
+    const lt = lightTime(b);
+    for (let r = 0; r < b.rows; r++) for (let q = 0; q < b.cols; q++) {
+      const i = r * b.cols + q, x = sx + q * 80, y = -b.h + 60 + r * 105;
+      if (y + wh > -190) continue;
+      let glass;
+      if (!col) glass = grey(20 + L * 10);
+      else {
+        const lit = b.lit[i] || (t > lt + .04 * (i % 7) + .03 * r);
+        glass = lit ? '#ffe39a' : '#bfe4ff';
+      }
+      c.fillStyle = trim; c.fillRect(x - 6, y - 6, ww + 12, wh + 12);
+      c.fillStyle = glass; c.fillRect(x, y, ww, wh);
+      if (col) { c.fillStyle = 'rgba(255,255,255,.45)'; c.fillRect(x + 6, y + 6, 8, wh - 12); }
+      if (col && b.box[i]) {
+        c.fillStyle = hsl((b.hue + 180) % 360, 55, 45); c.fillRect(x - 6, y + wh + 2, ww + 12, 12);
+        for (let f = 0; f < 4; f++) { c.fillStyle = hsl(PAL[(f + b.seed) % PAL.length], 85, 62); c.beginPath(); c.arc(x + 4 + f * 13, y + wh - 2, 7, 0, TAU); c.fill(); }
+      }
+    }
+    // первый этаж: витрина, дверь, навес
+    const dx = b.x + b.w * .62;
+    c.fillStyle = col ? '#8a5a3c' : grey(18 + L * 8); c.fillRect(dx, -150, 70, 150);
+    c.fillStyle = col ? '#d4f0ff' : grey(24 + L * 8); c.fillRect(b.x + 30, -140, b.w * .62 - 50, 90);
+    // навес
+    const ax = b.x + 18, aw = b.w * .62 - 26;
+    for (let s = 0; s < 6; s++) {
+      c.fillStyle = col ? (s % 2 ? '#fffaf0' : hsl((b.hue + 140) % 360, 75, 58)) : (s % 2 ? grey(52 + L * 10) : grey(40 + L * 10));
+      c.beginPath(); c.moveTo(ax + s * aw / 6, -168); c.lineTo(ax + (s + 1) * aw / 6, -168); c.lineTo(ax + (s + 1) * aw / 6 + 6, -132); c.lineTo(ax + s * aw / 6 + 6, -132); c.fill();
+    }
+    c.restore();
+  }
+}
+
+function drawFg(c, cam, t, col) {
+  for (const x of LAMPS) {
+    // столб
+    c.fillStyle = col ? '#2f6f74' : grey(22);
+    c.fillRect(x - 15, -760, 30, 760); c.fillRect(x - 32, -60, 64, 60);
+    c.strokeStyle = c.fillStyle; c.lineWidth = 16; c.beginPath(); c.moveTo(x, -740); c.quadraticCurveTo(x + 10, -820, x + 110, -800); c.stroke();
+    c.fillStyle = col ? '#24585c' : grey(17); c.beginPath(); c.moveTo(x + 70, -800); c.lineTo(x + 150, -800); c.lineTo(x + 135, -760); c.lineTo(x + 85, -760); c.fill();
+    if (col) {
+      const gl = c.createRadialGradient(x + 110, -750, 5, x + 110, -750, 240);
+      gl.addColorStop(0, 'rgba(255,236,170,.95)'); gl.addColorStop(.25, 'rgba(255,220,140,.35)'); gl.addColorStop(1, 'rgba(255,220,140,0)');
+      c.fillStyle = gl; c.fillRect(x - 140, -1000, 500, 500);
+      // корзина с цветами
+      c.fillStyle = '#7a4b2a'; c.beginPath(); c.arc(x, -520, 46, 0, Math.PI); c.fill();
+      for (let f = 0; f < 7; f++) { c.fillStyle = hsl(PAL[(f * 3 + 1) % PAL.length], 88, 62); c.beginPath(); c.arc(x - 42 + f * 14, -526 - (f % 2) * 12, 15, 0, TAU); c.fill(); }
+    } else { c.fillStyle = grey(30); c.fillRect(x + 90, -762, 40, 6); }
+  }
+  drawRain(c, t, -250, 260, 3.2, col);
+}
+
+/* ---------- дождь (аналитический, мир) ---------- */
+const RAIN = Array.from({ length: 900 }, (_, i) => ({ x: hr(i * 1.31) * 9000 - 3600, y: hr(i * 2.77) * 3200, v: lerp(1700, 2300, hr(i * 5.1)), l: lerp(50, 90, hr(i * 7.9)), h: PAL[i % PAL.length] }));
+function drawRain(c, t, z, every, lw, col) {
+  const a = 1 - smooth(10.2, 11.6, t);
+  if (a <= 0) return;
+  const tt = storyTime(t);
+  c.lineWidth = lw; c.lineCap = 'round';
+  const colorNow = col;
+  if (!colorNow) { c.strokeStyle = `rgba(220,226,236,${.45 * a})`; c.beginPath(); }
+  for (let i = 0; i < RAIN.length; i += (every > 400 ? 2 : 1)) {
+    const d = RAIN[i];
+    const y = ((d.y + tt * d.v) % 3200) - 2900, x = d.x - y * .12;
+    if (y > 20) continue;
+    if (colorNow) { c.strokeStyle = hsl(d.h, 90, 70, .7 * a); c.beginPath(); c.moveTo(x, y); c.lineTo(x - d.l * .12, y + d.l); c.stroke(); }
+    else { c.moveTo(x, y); c.lineTo(x - d.l * .12, y + d.l); }
+  }
+  if (!colorNow) c.stroke();
+}
+
+/* ---------- земля (горизонтальная плоскость, проекция по точкам) ---------- */
+function gpt(cam, x, z) { return proj(cam, x, 0, z); }
+function quad(c, cam, x0, x1, z0, z1) {
+  const a = gpt(cam, x0, z0), b = gpt(cam, x1, z0), d = gpt(cam, x1, z1), e = gpt(cam, x0, z1);
+  c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.lineTo(d[0], d[1]); c.lineTo(e[0], e[1]); c.closePath();
+}
+function groundEllipse(c, cam, x, z, rx, rz, n = 40) {
+  c.beginPath();
+  for (let i = 0; i <= n; i++) { const a = i / n * TAU, p = gpt(cam, x + Math.cos(a) * rx, z + Math.sin(a) * rz); i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]); }
+  c.closePath();
+}
+function drawGround(c, cam, t, col) {
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  const zn = Math.max(-1600, cam.z + 60), XL = cam.x - 9000, XR = cam.x + 9000;
+  // дорога
+  quad(c, cam, XL, XR, zn, 112); c.fillStyle = col ? '#6d6478' : grey(33); c.fill();
+  // разметка
+  c.fillStyle = col ? '#ffd84d' : grey(50);
+  const x0 = Math.floor((cam.x - 4200) / 280) * 280;
+  for (let x = x0; x < cam.x + 4200; x += 280) if (zn < -300) { quad(c, cam, x, x + 140, -330, -300); c.fill(); }
+  // бордюр и тротуар
+  quad(c, cam, XL, XR, 112, 126); c.fillStyle = col ? '#fff4e2' : grey(55); c.fill();
+  quad(c, cam, XL, XR, 126, 250); c.fillStyle = col ? '#f2c9a5' : grey(44); c.fill();
+  c.strokeStyle = col ? 'rgba(170,110,80,.45)' : grey(36, .8); c.lineWidth = 1.5;
+  c.beginPath();
+  for (let x = Math.floor((cam.x - 4200) / 120) * 120; x < cam.x + 4200; x += 120) { const a = gpt(cam, x, 126), b = gpt(cam, x, 250); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); }
+  const m0 = gpt(cam, XL, 188), m1 = gpt(cam, XR, 188); c.moveTo(m0[0], m0[1]); c.lineTo(m1[0], m1[1]);
+  c.stroke();
+  // лужи
+  for (const [px, pz, rx, rz] of [[0, 10, 150, 70], [980, -140, 120, 55], [1750, 40, 140, 60], [-700, -60, 130, 60]]) {
+    groundEllipse(c, cam, px, pz, rx, rz);
+    c.fillStyle = col ? 'rgba(140,200,255,.55)' : grey(26, .9); c.fill();
+    if (!col && t < 10.5) { // круги от капель
+      c.strokeStyle = grey(55, .6); c.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        const ph = ((storyTime(t) * .9 + i / 3 + hr(px + i)) % 1), cx = px + (hr(px * 3 + i) - .5) * rx, cz = pz + (hr(px * 5 + i) - .5) * rz * .8;
+        groundEllipse(c, cam, cx, cz, 8 + ph * 40, 4 + ph * 18, 20); c.globalAlpha = 1 - ph; c.stroke(); c.globalAlpha = 1;
+      }
+    }
+  }
+}
+
+/* ---------- клумбы на тротуаре (плоскость z=200) ---------- */
+function drawPlanters(c, cam, t, col) {
+  setPlane(c, cam, 200);
+  for (const p of PLANTERS) {
+    c.fillStyle = col ? '#b5653d' : grey(30); c.fillRect(p.x - 60, -54, 120, 54);
+    c.fillStyle = col ? '#d27c50' : grey(38); c.fillRect(p.x - 66, -60, 132, 12);
+    if (!col) { c.strokeStyle = grey(40); c.lineWidth = 4; c.beginPath(); c.moveTo(p.x - 20, -60); c.lineTo(p.x - 30, -100); c.moveTo(p.x + 15, -60); c.lineTo(p.x + 26, -92); c.stroke(); continue; }
+    const k = elastic(clamp((t - reachTime(p.x, -60, 200) - .1) / .9, 0, 1));
+    if (k <= 0) continue;
+    for (let f = 0; f < 5; f++) {
+      const fx = p.x - 44 + f * 22, hgt = (55 + hr(p.seed + f) * 45) * k, hue = PAL[Math.floor(hr(p.seed * 3 + f) * PAL.length)];
+      c.strokeStyle = '#3b8a3f'; c.lineWidth = 5; c.beginPath(); c.moveTo(fx, -58); c.lineTo(fx, -58 - hgt); c.stroke();
+      c.fillStyle = hsl(hue, 88, 64);
+      for (let q = 0; q < 5; q++) { const a = q / 5 * TAU; c.beginPath(); c.arc(fx + Math.cos(a) * 9 * k, -58 - hgt + Math.sin(a) * 9 * k, 7 * k, 0, TAU); c.fill(); }
+      c.fillStyle = '#ffe14d'; c.beginPath(); c.arc(fx, -58 - hgt, 5 * k, 0, TAU); c.fill();
+    }
+  }
+}
+
+/* =========================================================================
+   ТИПОГРАФИКА
+   ========================================================================= */
+const fontStr = (w, s) => `${Math.round(w / 25) * 25} ${s}px Unbounded`;
+const mcache = new Map();
+function mw(ch, w, s) { const k = ch + w + '|' + s; if (!mcache.has(k)) { mctx.font = fontStr(w, s); mcache.set(k, mctx.measureText(ch).width); } return mcache.get(k); }
+function layout(str, w, s, cx, track) {
+  const ws = [...str].map(ch => mw(ch, w, s)), tot = ws.reduce((a, b) => a + b, 0) + track * (ws.length - 1);
+  let x = cx - tot / 2;
+  return [...str].map((ch, i) => { const o = { ch, x: x + ws[i] / 2, w: ws[i] }; x += ws[i] + track; return o; });
+}
+function glyph(c, ch, x, y, s, w, face, side, depth, ang = 0, sx = 1, sy = 1) {
+  c.save(); c.translate(x, y); if (ang) c.rotate(ang); c.scale(sx, sy);
+  c.font = fontStr(w, s); c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  if (depth > 0) { c.fillStyle = side; const n = Math.ceil(depth / 2.2); for (let i = n; i >= 1; i--) c.fillText(ch, i * 1.6 * depth / n * .7, i * 1.2 * depth / n * .7 + 0); }
+  c.fillStyle = face; c.fillText(ch, 0, 0);
+  c.restore();
+}
+
+/* ---------- башня «НЕЛЬЗЯ» ---------- */
+function towerInit() {
+  mctx.font = fontStr(900, TOWER.size);
+  const capH = mctx.measureText('Н').actualBoundingBoxAscent, gap = 8;
+  towerLay = [...TOWER.word].map((ch, k) => ({ ch, k, base: -k * (capH + gap), capH, w: mw(ch, 900, TOWER.size) }));
+  const hitL = towerLay[2];
+  BONK_X = TOWER.x - hitL.w / 2 - R + 6;
+  FLASHES[3][1] = BONK_X + R;
+}
+const POP = [ // параметры разлёта букв: vx, vy, vz, spin
+  [-560, -980, -260, -3], [420, -1150, -820, 4], [-300, -1300, -1250, -5], [650, -1050, -380, 6], [-720, -1250, -980, -4], [260, -1450, -640, 5],
+];
+function towerLand(k) { return 4.0 + .075 * k; }
+function towerPop(k) { return 10.52 + (5 - k) * .07; }
+function drawTower(c, cam, t, col, popped) {
+  if (t < 3.7) return;
+  for (const L of towerLay) {
+    const tl = towerLand(L.k), tp = towerPop(L.k);
+    if (t < tl - .3) continue;
+    const isPopped = t >= tp;
+    if (isPopped !== popped) continue;
+    let x = TOWER.x, y = L.base, z = 0, ang = 0, sx = 1, sy = 1;
+    if (t < tl) { const u = (t - (tl - .3)) / .3; y = L.base - 1300 * (1 - u * u); sy = 1.06; sx = .97; }
+    else if (!isPopped) {
+      const d = t - tl; sy = 1 - .1 * Math.exp(-14 * d) * Math.cos(22 * d); sx = 1 / Math.sqrt(sy);
+      // удары сверху сжимают нижние буквы
+      for (let j = L.k + 1; j < 6; j++) { const dj = t - towerLand(j); if (dj > 0) sy -= .04 * Math.exp(-16 * dj) * Math.cos(24 * dj); }
+      if (L.k === 2 && t > 5.25) x += 12 * Math.exp(-8 * (t - 5.25)) * Math.sin(30 * (t - 5.25));
+      if (t > 5.25) ang = .01 * Math.exp(-6 * (t - 5.25)) * Math.sin(26 * (t - 5.25)) * (L.k / 5);
+      if (col) { const pre = t - (tp - .25); if (pre > 0) { const w = Math.sin(pre * 40) * .06 * pre / .25; sx += w; sy -= w; } }
+    } else {
+      const d = t - tp, [vx, vy, vz, sp] = POP[L.k];
+      x += vx * d; y = L.base + vy * d + .5 * 2600 * d * d; z = vz * d; ang = sp * d;
+      const jelly = .18 * Math.exp(-5 * d) * Math.sin(20 * d); sx = 1 + jelly; sy = 1 - jelly;
+      if (z - cam.z < 60 || d > 1.3) continue;
+    }
+    const face = col ? hsl(PAL[(L.k * 2 + 1) % PAL.length], 85, 60) : null;
+    if (isPopped) { spriteGlyph(c, cam, L, x, y, z, ang, sx, sy, face); continue; }
+    setPlane(c, cam, 0);
+    if (col) glyph(c, L.ch, x, y, TOWER.size, 900, face, hsl(PAL[(L.k * 2 + 1) % PAL.length], 70, 36), 18, ang, sx, sy);
+    else {
+      const g = c.createLinearGradient(0, y - L.capH, 0, y);
+      g.addColorStop(0, grey(62)); g.addColorStop(1, grey(40));
+      glyph(c, L.ch, x, y, TOWER.size, 900, g, grey(22), 18, ang, sx, sy);
+    }
+    c.filter = 'none';
+  }
+}
+
+// Разлетающаяся буква: рисуется в маленький спрайт и размывается по глубине только там.
+const SPR = document.createElement('canvas'), sprc = SPR.getContext('2d');
+function spriteGlyph(c, cam, L, x, y, z, ang, sx, sy, face) {
+  const [X, Y, s] = proj(cam, x, y - L.capH / 2, z), b = coc(cam, z);
+  const size = Math.ceil(TOWER.size * 1.9 * s + 6 * b + 24);
+  const side = hsl(PAL[(L.k * 2 + 1) % PAL.length], 70, 36);
+  if (size > 1400) { setPlane(c, cam, z); glyph(c, L.ch, x, y, TOWER.size, 900, face, side, 18, ang, sx, sy); return; }
+  if (SPR.width < size) { SPR.width = SPR.height = size; }
+  sprc.setTransform(1, 0, 0, 1, 0, 0); sprc.clearRect(0, 0, size, size);
+  sprc.setTransform(1, 0, 0, 1, size / 2, size / 2); sprc.rotate(ang + cam.roll); sprc.scale(s, s);
+  glyph(sprc, L.ch, 0, L.capH / 2, TOWER.size, 900, face, side, 18, 0, sx, sy);
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.filter = b > .8 ? `blur(${b.toFixed(1)}px)` : 'none';
+  c.drawImage(SPR, 0, 0, size, size, X - size / 2, Y - size / 2, size, size);
+  c.filter = 'none';
+}
+
+/* ---------- титр ---------- */
+const TITLE_GREY = 'СЕРЫЙ ГОРОД', TITLE_COL = 'ЯРКИЙ ГОРОД';
+const HUES_T = [342, 18, 44, 158, 200, 0, 262, 290, 322, 8, 36];
+function titleInit() {
+  titleA = layout(TITLE_GREY, 200, TITLE.size, TITLE.x, TITLE.track);
+  titleB = layout(TITLE_COL, 900, TITLE.size, TITLE.x, TITLE.track);
+  HIT_X = titleA.slice(0, 5).reduce((a, g) => a + g.x, 0) / 5;
+}
+function drawTitle(c, cam, t) {
+  if (t > 3.6 && t < 14.0) return;
+  setPlane(c, cam, 0);
+  mctx.font = fontStr(900, TITLE.size);
+  const capH = mctx.measureText('Г').actualBoundingBoxAscent;
+  for (let i = 0; i < 11; i++) {
+    const A = titleA[i], B = titleB[i];
+    if (A.ch === ' ') continue;
+    const land = .2 + i * .07;
+    if (t < land - .45) continue;
+    let x = A.x, y = TITLE.y, w = 200, sx = 1, sy = 1, ang = 0, face = 'rgba(236,239,243,.96)', side = null, depth = 0, alpha = 1;
+    // падение каплями
+    if (t < land) { const u = (t - (land - .45)) / .45; y = TITLE.y - 900 * (1 - u * u); sy = 1.25; sx = .85; alpha = smooth(0, .4, u); }
+    else { const d = t - land; sy = 1 - .16 * Math.exp(-10 * d) * Math.cos(18 * d); sx = 1 / Math.sqrt(sy); }
+    // шарик пролетает: буквы расступаются
+    const dp = t - TITLE_PASS;
+    if (dp > 0) { const dx = A.x - 0, push = Math.sign(dx || 1) * 110 * Math.exp(-((dx / 260) ** 2)); x += push * Math.sin(9 * dp) * Math.exp(-3.2 * dp); }
+    if (i < 5) {
+      // «СЕРЫЙ» улетает после удара, «ЯРКИЙ» вырастает
+      if (t >= 15.2) {
+        const d = t - 15.2, dir = (i - 2);
+        const gx = A.x + (dir * 320 + (hr(i) - .5) * 160) * d, gy = TITLE.y + (-1500 - hr(i + 3) * 500) * d + .5 * 900 * d * d;
+        const ga = (dir || .6) * 2.2 * d, ka = 1 - smooth(.15, .85, d);
+        if (ka > 0) { c.globalAlpha = ka; glyph(c, A.ch, gx, gy, TITLE.size, 200, 'rgba(210,214,220,1)', null, 0, ga, 1 - .3 * d, 1 - .3 * d); c.globalAlpha = 1; }
+        const ta = 15.28 + .12 * i, e = elastic(clamp((t - ta) / .6, 0, 1));
+        if (e > 0) {
+          const hue = HUES_T[i], ww = lerp(500, 900, smooth(ta, ta + .3, t));
+          glyph(c, B.ch, B.x, TITLE.y + idleBob(t, i), TITLE.size, ww, hsl(hue, 92, 62), hsl(hue, 75, 38), 16, 0, e, e);
+        }
+        continue;
+      }
+    } else {
+      // «ГОРОД» наливается весом и цветом на приземлении
+      const tg = 16.0 + (i - 6) * .06, f = smooth(tg, tg + .35, t);
+      if (f > 0) {
+        x = lerp(A.x, B.x, f); w = lerp(200, 900, f);
+        const pop = t > tg ? .14 * Math.exp(-6 * (t - tg)) * Math.sin(16 * (t - tg)) : 0; sx *= 1 + pop; sy *= 1 - pop;
+        y += idleBob(t, i);
+        face = mixc([236, 239, 243], hslRgb(HUES_T[i], .92, .62), f); side = hsl(HUES_T[i], 75, 38, f); depth = 16 * f;
+      }
+    }
+    if (t > 15.2 && t < 15.9 && i >= 6) { const d = t - 15.2; y -= 22 * Math.exp(-6 * d) * Math.sin(14 * d - (i - 6) * .5); }
+    c.globalAlpha = alpha;
+    glyph(c, A.ch, x, y, TITLE.size, w, face, side, depth, ang, sx, sy);
+    c.globalAlpha = 1;
+  }
+}
+function idleBob(t, i) { return 7 * Math.sin(TAU * .7 * t - i * .55) * smooth(16.7, 17.6, t); }
+function hslRgb(h, s, l) { const a = s * Math.min(l, 1 - l), f = n => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); }; return [f(0) * 255, f(8) * 255, f(4) * 255]; }
+
+/* =========================================================================
+   ЧАСТИЦЫ (аналитические: позиция = функция времени события)
+   ========================================================================= */
+const EVENTS = [];
+function addEv(t, x, y, z, kind, n, seed, extra = {}) { EVENTS.push({ t, x, y, z, kind, n, seed, ...extra }); }
+function eventsInit() {
+  EVENTS.length = 0;
+  addEv(3.0, 0, 0, 0, 'water', 34, 1); addEv(3.5, 150, 0, 0, 'water', 10, 2); addEv(4.0, 300, 0, 0, 'water', 10, 3);
+  addEv(4.0, TOWER.x, 0, 0, 'dust', 22, 4); for (let k = 1; k < 6; k++) addEv(towerLand(k), TOWER.x, towerLay[k].base, 0, 'chips', 6, 10 + k);
+  addEv(5.25, BONK_X + R, -280, 0, 'chips', 8, 20); addEv(5.75, 420, 0, 0, 'water', 10, 21);
+  addEv(6.5, 420, -2 * R - 2, 0, 'spark', 18, 22);
+  addEv(8.5, 0, 0, 0, 'paint', 16, 23); addEv(10.0, 1300, 0, 0, 'paint', 46, 24);
+  for (let i = 1; i < BOUNCE_LIGHT.length; i++) addEv(BOUNCE_LIGHT[i], ballRaw(BOUNCE_LIGHT[i]).x, 0, 0, 'paint', 14, 30 + i);
+  for (let k = 0; k < 6; k++) addEv(towerPop(k), TOWER.x, towerLay[k].base - 60, 0, 'paint', 12, 50 + k);
+  addEv(15.2, HIT_X, -1250, 0, 'spark', 34, 60); addEv(16.0, 420, 0, 0, 'paint', 30, 61);
+}
+function drawParticles(c, cam, t) {
+  setPlane(c, cam, 0);
+  for (const e of EVENTS) {
+    const d = t - e.t; if (d < 0 || d > 1.6) continue;
+    const r = rng(e.seed * 977);
+    for (let i = 0; i < e.n; i++) {
+      const a1 = r(), a2 = r(), a3 = r(), a4 = r();
+      let x, y, size, life, colr;
+      if (e.kind === 'water') {
+        const ang = -Math.PI / 2 + (a1 - .5) * 2.2, v = lerp(300, 950, a2); life = lerp(.35, .7, a3); if (d > life) continue;
+        x = e.x + Math.cos(ang) * v * d; y = e.y + Math.sin(ang) * v * d + 1200 * d * d; size = lerp(3, 8, a4) * (1 - d / life * .5);
+        colr = `rgba(205,215,230,${.85 * (1 - d / life)})`;
+      } else if (e.kind === 'dust') {
+        const dir = a1 < .5 ? -1 : 1, v = lerp(120, 420, a2); life = lerp(.8, 1.4, a3); if (d > life) continue;
+        const k = 1 - Math.exp(-3 * d);
+        x = e.x + dir * (75 + v * k * .7); y = e.y - 6 - lerp(4, 70, a4) * k; size = lerp(10, 26, a4) * (.6 + k);
+        colr = grey(74, .26 * (1 - d / life));
+      } else if (e.kind === 'chips') {
+        const ang = (a1 < .5 ? Math.PI : 0) + (a2 - .5) * 1.4 - .4 * (a1 < .5 ? -1 : 1), v = lerp(200, 600, a3); life = .6; if (d > life) continue;
+        x = e.x + Math.cos(ang) * v * d + (a1 < .5 ? -70 : 70); y = e.y + Math.sin(ang) * v * d + 1800 * d * d; size = lerp(4, 9, a4);
+        colr = grey(45, 1 - d / life);
+      } else if (e.kind === 'spark') {
+        const ang = a1 * TAU, v = lerp(120, 520, a2); life = lerp(.5, 1.0, a3); if (d > life) continue;
+        const k = 1 - Math.exp(-4 * d);
+        x = e.x + Math.cos(ang) * v * k * .5; y = e.y + Math.sin(ang) * v * k * .5 + 60 * d * d; size = lerp(4, 9, a4) * (1 - d / life);
+        colr = `rgba(255,${Math.round(lerp(230, 255, a4))},${Math.round(lerp(150, 230, a1))},${1 - d / life})`;
+      } else {
+        const ang = -Math.PI / 2 + (a1 - .5) * 2.6, v = lerp(380, 1250, a2); life = lerp(.5, 1.0, a3); if (d > life) continue;
+        x = e.x + Math.cos(ang) * v * d; y = e.y + Math.sin(ang) * v * d + 2000 * d * d; size = lerp(6, 15, a4) * (1 - .4 * d / life);
+        colr = hsl(PAL[Math.floor(a4 * PAL.length)], 92, 62, 1 - smooth(life * .6, life, d));
+      }
+      if (y > 4) continue;
+      c.fillStyle = colr; c.beginPath(); c.arc(x, y, size, 0, TAU); c.fill();
+    }
+  }
+  // искры, которые шарик собирает при разгоне
+  if (t > 7.9 && t < 8.55) {
+    const b = ballRaw(t);
+    for (let i = 0; i < 26; i++) {
+      const ph = ((t * 1.8 + hr(i)) % 1), ang = hr(i * 3) * TAU, dist = 190 * (1 - ph);
+      c.fillStyle = hsl(PAL[i % PAL.length], 95, 70, ph * smooth(7.9, 8.1, t));
+      c.beginPath(); c.arc(b.x + Math.cos(ang) * dist, b.y + Math.sin(ang) * dist, 3 + 4 * ph, 0, TAU); c.fill();
+    }
+  }
+  // радужный шлейф прыжков
+  for (const [a, b] of [[8.5, 10.0], [14.5, 15.25]]) {
+    if (t < a || t > b + .5) continue;
+    for (let ts = Math.max(a, t - .45); ts < Math.min(t, b); ts += .018) {
+      const p = ballRaw(ts), k = 1 - (t - ts) / .45, i = Math.round(ts / .018);
+      c.fillStyle = hsl(PAL[i % PAL.length], 95, 66, .55 * k);
+      c.beginPath(); c.arc(p.x + (hr(i) - .5) * 30, p.y + (hr(i * 7) - .5) * 30 + (t - ts) * 60, 10 * k + 3, 0, TAU); c.fill();
+    }
+  }
+}
+
+/* ---------- одна капля, что даёт смелость (6.5 с) ---------- */
+function drawHeroDrop(c, cam, t) {
+  if (t < 6.1 || t > 6.5) return;
+  setPlane(c, cam, 0);
+  const u = (t - 6.1) / .4, y = lerp(-700, -2 * R - 10, u * u);
+  c.fillStyle = 'rgba(214,226,240,.95)';
+  c.beginPath(); c.moveTo(420, y - 34); c.quadraticCurveTo(436, y - 4, 420, y + 6); c.quadraticCurveTo(404, y - 4, 420, y - 34); c.fill();
+}
+
+/* ---------- шарик ---------- */
+function drawShadow(c, cam, t) {
+  const b = ballRaw(t), hgt = -b.y - R;
+  if (t > 15.25 && t < 15.9) return;
+  const k = clamp(1 - hgt / 900, .15, 1);
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  groundEllipse(c, cam, b.x, 0, R * 1.1 * k, R * .45 * k, 28);
+  c.fillStyle = `rgba(10,8,20,${.32 * k})`; c.fill();
+  // тень под башней
+  if (t > 4.0 && t < 10.6) { groundEllipse(c, cam, TOWER.x, 0, 110, 40, 28); c.fillStyle = 'rgba(10,8,20,.3)'; c.fill(); }
+}
+function drawBall(c, cam, t) {
+  const st = ballState(t);
+  const s = setPlane(c, cam, 0);
+  const speed = Math.hypot(st.vx, st.vy), ang = Math.atan2(st.vy, st.vx), str = 1 + clamp(speed / 5000, 0, .16);
+  const glow = ballGlow(t);
+  // ореол: в сером городе шарик — единственный источник цвета
+  const gR = R * (2.4 + glow * 1.4);
+  const g = c.createRadialGradient(st.x, st.y, R * .7, st.x, st.y, gR);
+  g.addColorStop(0, `rgba(255,140,170,${.3 * glow + .1})`); g.addColorStop(1, 'rgba(255,170,120,0)');
+  c.fillStyle = g; c.beginPath(); c.arc(st.x, st.y, gR, 0, TAU); c.fill();
+  c.save(); c.translate(st.x, st.y);
+  if (str > 1.002) { c.rotate(ang); c.scale(str, 1 / str); c.rotate(-ang); }
+  c.scale(1 + .8 * st.dg, 1 - st.dg); c.scale(1 - st.dw, 1 + .8 * st.dw);
+  // тело
+  const body = c.createRadialGradient(-R * .38, -R * .42, R * .08, 0, 0, R * 1.02);
+  body.addColorStop(0, '#fff1c7'); body.addColorStop(.35, '#ff9a6b'); body.addColorStop(.75, '#ff4f8b'); body.addColorStop(1, '#c42e78');
+  c.fillStyle = body; c.beginPath(); c.arc(0, 0, R, 0, TAU); c.fill();
+  // вращающаяся полоса (видно качение)
+  c.save(); c.beginPath(); c.arc(0, 0, R, 0, TAU); c.clip(); c.rotate(st.spin);
+  c.strokeStyle = 'rgba(255,236,140,.75)'; c.lineWidth = R * .2; c.beginPath(); c.ellipse(0, 0, R * .98, R * .38, 0, 0, TAU); c.stroke();
+  c.strokeStyle = 'rgba(120,220,255,.6)'; c.lineWidth = R * .1; c.beginPath(); c.ellipse(0, 0, R * .38, R * .98, 0, 0, TAU); c.stroke();
+  c.restore();
+  // ободок и блик
+  c.strokeStyle = 'rgba(120,20,70,.35)'; c.lineWidth = 2.2; c.beginPath(); c.arc(0, 0, R - 1, 0, TAU); c.stroke();
+  c.fillStyle = 'rgba(255,255,255,.75)'; c.beginPath(); c.ellipse(-R * .36, -R * .5, R * .24, R * .13, -.55, 0, TAU); c.fill();
+  // вспышка капли смелости
+  if (t > 6.5 && t < 7.2) { const d = t - 6.5; c.strokeStyle = `rgba(255,255,255,${.9 * (1 - d / .7)})`; c.lineWidth = 3; c.beginPath(); c.arc(0, 0, R + d * 90, 0, TAU); c.stroke(); }
+  // лицо
+  const mode = faceMode(t);
+  let look = speed > 30 ? [st.vx / speed, st.vy / speed * .7] : [0, 0];
+  if (mode === 'sad') look = [-.25, .8];
+  if (t > 4.0 && t < 4.75) look = [1, -.35];
+  if (t > 6.5 && t < 6.85) look = [0, -1];
+  if (t > 6.85 && t < 8.5) look = [1, -.4];
+  const blink = (t > 3.72 && t < 3.84) || (t > 7.35 && t < 7.45);
+  drawFace(c, R, mode, look, blink);
+  c.restore();
+}
+function drawFace(c, r, mode, look, blink) {
+  const s = r / 24, ex = 7.5 * s, ey = -3.5 * s;
+  c.lineCap = 'round'; c.lineJoin = 'round'; c.strokeStyle = '#3a1030'; c.fillStyle = '#3a1030';
+  if (mode === 'happy') {
+    c.lineWidth = 2.6 * s;
+    for (const sx of [-1, 1]) { c.beginPath(); c.arc(sx * ex, ey + 2 * s, 4 * s, Math.PI * 1.1, Math.PI * 1.9); c.stroke(); }
+    c.beginPath(); c.arc(0, 4 * s, 6.5 * s, .15 * Math.PI, .85 * Math.PI); c.stroke();
+    c.fillStyle = 'rgba(255,70,110,.45)';
+    for (const sx of [-1, 1]) { c.beginPath(); c.ellipse(sx * 13.5 * s, 5 * s, 3.8 * s, 2.4 * s, 0, 0, TAU); c.fill(); }
+    return;
+  }
+  if (mode === 'ouch') {
+    c.lineWidth = 2.4 * s;
+    for (const sx of [-1, 1]) { c.beginPath(); c.moveTo(sx * ex + 3.5 * s * sx, ey - 3.5 * s); c.lineTo(sx * ex - 3 * s * sx, ey); c.lineTo(sx * ex + 3.5 * s * sx, ey + 3.5 * s); c.stroke(); }
+    c.beginPath(); c.ellipse(0, 8.5 * s, 3.2 * s, 3.8 * s, 0, 0, TAU); c.fill();
+    return;
+  }
+  const hk = blink ? .12 : mode === 'focus' ? .62 : mode === 'sad' ? .82 : 1, er = (mode === 'wow' ? 5.9 : 5.1) * s;
+  for (const sx of [-1, 1]) {
+    c.save(); c.translate(sx * ex, ey); c.scale(1, hk);
+    c.fillStyle = '#fff'; c.beginPath(); c.ellipse(0, 0, er, er * 1.12, 0, 0, TAU); c.fill();
+    c.fillStyle = '#2a0c24'; c.beginPath(); c.arc(look[0] * 2.1 * s, look[1] * 2.1 * s, 2.8 * s, 0, TAU); c.fill();
+    c.fillStyle = '#fff'; c.beginPath(); c.arc(look[0] * 2.1 * s - .9 * s, look[1] * 2.1 * s - 1.1 * s, .95 * s, 0, TAU); c.fill();
+    c.restore();
+  }
+  c.lineWidth = 2 * s;
+  if (mode === 'sad' || mode === 'focus') for (const sx of [-1, 1]) {
+    c.beginPath();
+    if (mode === 'sad') { c.moveTo(sx * (ex + 5 * s), ey - 6 * s); c.lineTo(sx * (ex - 4 * s), ey - 9.5 * s); }
+    else { c.moveTo(sx * (ex + 5 * s), ey - 9.5 * s); c.lineTo(sx * (ex - 4 * s), ey - 5.5 * s); }
+    c.stroke();
+  }
+  c.beginPath();
+  if (mode === 'sad') c.arc(0, 12.5 * s, 4.2 * s, 1.2 * Math.PI, 1.8 * Math.PI);
+  else if (mode === 'focus') { c.moveTo(-3.5 * s, 8.5 * s); c.lineTo(3.5 * s, 8.5 * s); }
+  else if (mode === 'wow') c.ellipse(0, 8.5 * s, 2.8 * s, 3.4 * s, 0, 0, TAU);
+  else c.arc(0, 5.5 * s, 4 * s, .2 * Math.PI, .8 * Math.PI);
+  c.stroke();
+}
+
+/* =========================================================================
+   СБОРКА КАДРА
+   ========================================================================= */
+function circlesPath(c, circ) { c.beginPath(); for (const [x, y, r] of circ) { c.moveTo(x + r, y); c.arc(x, y, r, 0, TAU); } }
+function waveRing(c, t, z) {
+  const d = t - WAVE.t; if (d <= 0 || d > 2.6) return;
+  const R2 = (WAVE.v * d) ** 2 - z * z; if (R2 <= 0) return;
+  const r = Math.sqrt(R2), a = 1 - d / 2.6;
+  c.lineWidth = 46; c.strokeStyle = `rgba(255,255,255,${.35 * a})`; c.beginPath(); c.arc(WAVE.x, WAVE.y, r, 0, TAU); c.stroke();
+  c.lineWidth = 14; c.strokeStyle = hsl((d * 220) % 360, 95, 66, .9 * a); c.beginPath(); c.arc(WAVE.x, WAVE.y, Math.max(0, r - 26), 0, TAU); c.stroke();
+}
+function renderColorable(c, cam, t, z, fn) {
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W, H);
+  const circ = colorCircles(t, z), full = circ.length && covered(circ, cam, z);
+  setPlane(c, cam, z);
+  if (!full) fn(c, cam, t, false);
+  if (circ.length) {
+    c.save(); setPlane(c, cam, z);
+    if (!full) { circlesPath(c, circ); c.clip(); }
+    fn(c, cam, t, true);
+    c.restore();
+    setPlane(c, cam, z); waveRing(c, t, z);
+  }
+}
+// Земля, клумбы, башня, дождь, титр, частицы, шарик — перерисовываются на каждом субкадре.
+function drawDynamic(c, cam, t) {
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W, H);
+  // земля: серая + цветная внутри эллипса волны на плоскости земли
+  drawGround(c, cam, t, false);
+  const circ = colorCircles(t, 0);
+  if (circ.length) {
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.beginPath();
+    for (const [x, , r, wv] of circ) {
+      // пересечение сферы с землёй — круг в плоскости xz
+      for (let i = 0; i <= 48; i++) { const a = i / 48 * TAU, p = gpt(cam, x + Math.cos(a) * r, clamp(Math.sin(a) * r, cam.z + 61, 4000)); i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]); }
+      c.closePath();
+    }
+    c.clip(); drawGround(c, cam, t, true); c.restore();
+  }
+  // клумбы
+  const pc = colorCircles(t, 200), pfull = pc.length && covered(pc, cam, 200);
+  if (!pfull) drawPlanters(c, cam, t, false);
+  if (pc.length) { c.save(); setPlane(c, cam, 200); if (!pfull) { circlesPath(c, pc); c.clip(); } drawPlanters(c, cam, t, true); c.restore(); }
+  drawShadow(c, cam, t);
+  // дождь ближнего плана
+  setPlane(c, cam, 100); drawRain(c, t, 100, 300, 2.2, t > 10.2);
+  // башня
+  const tc = colorCircles(t, 0), tfull = tc.length && covered(tc, cam, 0);
+  if (!tfull) drawTower(c, cam, t, false, false);
+  if (tc.length) { c.save(); setPlane(c, cam, 0); if (!tfull) { circlesPath(c, tc); c.clip(); } drawTower(c, cam, t, true, false); c.restore(); }
+  drawTitle(c, cam, t);
+  drawHeroDrop(c, cam, t);
+  drawParticles(c, cam, t);
+  drawBall(c, cam, t);
+  drawTower(c, cam, t, true, true); // разлетающиеся буквы — ближе к камере
+}
+
+const STATIC = [ // слой, глубина, функция
+  ['sky', 3500, (c, cam, t) => drawSky(c, cam, t)],
+  ['far', 2500, (c, cam, t) => renderColorable(c, cam, t, 2500, drawFar)],
+  ['mid', 900, (c, cam, t) => renderColorable(c, cam, t, 900, drawMid)],
+  ['facade', 250, (c, cam, t) => renderColorable(c, cam, t, 250, drawFacade)],
+];
+const SHUTTER = 1 / 120; // 180° при 60 fps
+
+function screenSpeed(t) {
+  // максимальное смещение по экрану за выдержку — для числа субкадров motion blur
+  const a = camAt(t - SHUTTER / 2), b = camAt(t + SHUTTER / 2);
+  let m = 0;
+  for (const z of [-450, 0, 250]) {
+    if (z - a.z < 80 || z - b.z < 80) continue;
+    const p = proj(a, a.x, a.y, z), q = proj(b, a.x, a.y, z); m = Math.max(m, Math.hypot(p[0] - q[0], p[1] - q[1]));
+  }
+  const ba = ballRaw(t - SHUTTER / 2), bb = ballRaw(t + SHUTTER / 2);
+  const p = proj(a, ba.x, ba.y, 0), q = proj(b, bb.x, bb.y, 0);
+  m = Math.max(m, Math.hypot(p[0] - q[0], p[1] - q[1]));
+  for (const k of [0, 1, 2, 3, 4, 5]) if (t > towerPop(k) && t < towerPop(k) + .9) m = Math.max(m, 18);
+  return m;
+}
+
+function composite(src, blur, alpha = 1) {
+  ctx.globalAlpha = alpha;
+  if (blur > .6) ctx.filter = `blur(${blur.toFixed(2)}px)`;
+  ctx.drawImage(src, 0, 0); ctx.filter = 'none'; ctx.globalAlpha = 1;
+}
+
+function renderAt(t, quality = 1) {
+  const cam = camAt(t);
+  const n = quality > 0 ? clamp(Math.ceil(screenSpeed(t) / 2.5), 1, 12) : 1;
+  const times = n === 1 ? [t] : Array.from({ length: n }, (_, i) => t - SHUTTER / 2 + SHUTTER * (i + .5) / n);
+  const cams = times.map(camAt);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+  // статичные слои: один рендер + смещение по камере на каждом субкадре
+  const all = [...STATIC, ['fg', -450, (c, cm, tt) => renderColorable(c, cm, tt, -450, drawFg)]];
+  const order = ['sky', 'far', 'mid', 'facade', 'DYN', 'fg'];
+  for (const name of order) {
+    if (name === 'DYN') {
+      if (n === 1) { drawDynamic(tctx, cam, t); composite(TMP, 0); }
+      else {
+        actx.setTransform(1, 0, 0, 1, 0, 0); actx.clearRect(0, 0, W, H); actx.globalCompositeOperation = 'lighter'; actx.globalAlpha = 1 / n;
+        for (let i = 0; i < n; i++) { drawDynamic(tctx, cams[i], times[i]); actx.drawImage(TMP, 0, 0); }
+        actx.globalCompositeOperation = 'source-over'; actx.globalAlpha = 1;
+        composite(ACC, 0);
+      }
+      continue;
+    }
+    const [, z, fn] = all.find(l => l[0] === name);
+    const d = z - cam.z;
+    if (d < 70) continue;
+    const fade = name === 'fg' ? smooth(90, 380, d) : 1;
+    const lc = LAY[name], lctx = lc.getContext('2d');
+    fn(lctx, cam, t);
+    const blur = coc(cam, z) * (quality > 0 ? 1 : 0);
+    if (n === 1) { composite(lc, blur, fade); continue; }
+    const M0inv = planeM(cam, z).inverse();
+    actx.setTransform(1, 0, 0, 1, 0, 0); actx.clearRect(0, 0, W, H); actx.globalCompositeOperation = 'lighter'; actx.globalAlpha = 1 / n;
+    for (let i = 0; i < n; i++) {
+      if (z - cams[i].z < 70) continue;
+      actx.setTransform(planeM(cams[i], z).multiply(M0inv)); actx.drawImage(lc, 0, 0);
+    }
+    actx.setTransform(1, 0, 0, 1, 0, 0); actx.globalCompositeOperation = 'source-over'; actx.globalAlpha = 1;
+    composite(ACC, blur, fade);
+  }
+  // атмосфера: виньетка, цветокоррекция по сюжету
+  const greyK = 1 - smooth(10.0, 12.5, t);
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.05);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, `rgba(16,12,28,${.28 + .25 * greyK})`);
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  if (t > 9.97 && t < 10.25) { ctx.fillStyle = `rgba(255,250,235,${.28 * (1 - (t - 9.97) / .28)})`; ctx.fillRect(0, 0, W, H); }
+  const fadeIn = 1 - smooth(0, .7, t);
+  if (fadeIn > 0) { ctx.fillStyle = `rgba(0,0,0,${fadeIn})`; ctx.fillRect(0, 0, W, H); }
+  return n;
+}
+
+/* =========================================================================
+   ИНИЦИАЛИЗАЦИЯ И ПРОСМОТР
+   ========================================================================= */
+window.ready = (async () => {
+  await Promise.all([document.fonts.load('200 100px Unbounded', 'СЕРЫЙГОДЯКИНЛЬЗ'), document.fonts.load('900 100px Unbounded', 'ЯРКИЙГОДНЕЛЬЗ')]);
+  await document.fonts.ready;
+  titleInit(); towerInit(); buildSeg(); eventsInit();
+  // момент пересечения шариком строки титра
+  for (let t = 1; t < 3; t += .005) if (ballRaw(t).y > TITLE.y - 120) { TITLE_PASS = t; break; }
+  return true;
+})();
+window.renderAt = renderAt;
+
+const isExport = new URLSearchParams(location.search).has('export');
+if (isExport) document.body.classList.add('export');
+else {
+  const music = document.getElementById('music'), ui = document.getElementById('ui'), bar = document.getElementById('bar');
+  let playing = false, t0 = 0, useAudio = false;
+  const now = () => useAudio ? music.currentTime : (performance.now() - t0) / 1000;
+  function loop() {
+    const t = Math.min(now(), DUR);
+    renderAt(t, 0); bar.style.width = (t / DUR * 100) + '%';
+    if (t < DUR && playing) requestAnimationFrame(loop);
+    else { playing = false; ui.classList.remove('hide'); document.getElementById('play').textContent = '↻ Ещё раз'; }
+  }
+  async function start() {
+    await window.ready; ui.classList.add('hide'); playing = true;
+    try { music.currentTime = 0; await music.play(); useAudio = true; } catch (e) { useAudio = false; t0 = performance.now(); }
+    requestAnimationFrame(loop);
+  }
+  ui.addEventListener('click', start);
+  window.ready.then(() => renderAt(0.9, 0));
+}
+</script>
+</body>
+</html>
