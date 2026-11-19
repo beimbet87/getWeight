@@ -1,12 +1,12 @@
 package com.getweight.cv.calibration
 
-import org.opencv.aruco.Aruco
-import org.opencv.aruco.DetectorParameters
-import org.opencv.aruco.Dictionary
 import org.opencv.core.Mat
-import org.opencv.core.MatOfInt
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
+import org.opencv.objdetect.ArucoDetector
+import org.opencv.objdetect.DetectorParameters
+import org.opencv.objdetect.Dictionary
+import org.opencv.objdetect.Objdetect
 
 /**
  * Пиксель→см калибровка через ArUco-маркер известного физического размера,
@@ -18,7 +18,7 @@ import org.opencv.core.Point
  */
 class ArucoCalibrator(
     private val markerLengthCm: Double = 50.0,
-    dictionaryId: Int = Aruco.DICT_5X5_100
+    dictionaryId: Int = Objdetect.DICT_5X5_100
 ) {
 
     /**
@@ -34,13 +34,19 @@ class ArucoCalibrator(
         val cameraTiltDeg: Double
     )
 
-    private val dictionary: Dictionary = Aruco.getPredefinedDictionary(dictionaryId)
-    private val params: DetectorParameters = DetectorParameters.create()
+    // Начиная с OpenCV 4.7 Java-биндинги ArUco переехали из модуля `aruco`
+    // (org.opencv.aruco.Aruco, статический detectMarkers(...)) в `objdetect`
+    // (org.opencv.objdetect.ArucoDetector — детектор создаётся один раз и
+    // детектирует через метод экземпляра). Пакет org.opencv.aruco в AAR
+    // org.opencv:opencv:4.10.0 отсутствует.
+    private val dictionary: Dictionary = Objdetect.getPredefinedDictionary(dictionaryId)
+    private val detectorParams: DetectorParameters = DetectorParameters()
+    private val detector: ArucoDetector = ArucoDetector(dictionary, detectorParams)
 
     fun detect(frameGray: Mat): CalibrationResult? {
         val corners = ArrayList<Mat>()
-        val ids = MatOfInt()
-        Aruco.detectMarkers(frameGray, dictionary, corners, ids, params)
+        val ids = Mat()
+        detector.detectMarkers(frameGray, corners, ids)
 
         if (corners.isEmpty()) return null
 

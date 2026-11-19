@@ -3,6 +3,7 @@ package com.getweight.cv
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
@@ -11,6 +12,7 @@ import androidx.core.content.ContextCompat
 import com.getweight.cv.camera.CameraController
 import com.getweight.cv.morphometry.BreedCondition
 import com.getweight.cv.pipeline.WeightPipeline
+import org.opencv.android.OpenCVLoader
 
 class MainActivity : AppCompatActivity() {
 
@@ -25,6 +27,16 @@ class MainActivity : AppCompatActivity() {
 
         previewView = findViewById(R.id.previewView)
         resultText = findViewById(R.id.resultText)
+
+        // OpenCV publishes its native .so libraries inside the AAR but does
+        // NOT load them automatically (no bundled initializer/ContentProvider) —
+        // every OpenCV call (ArucoCalibrator, Imgproc.cvtColor, Utils.bitmapToMat)
+        // throws UnsatisfiedLinkError until this runs at least once.
+        if (!OpenCVLoader.initLocal()) {
+            Log.e("MainActivity", "OpenCV native library failed to load")
+            resultText.text = "Ошибка инициализации OpenCV"
+            return
+        }
 
         pipeline = WeightPipeline(this)
 
@@ -71,7 +83,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        pipeline.close()
+        if (::pipeline.isInitialized) {
+            pipeline.close()
+        }
         if (::cameraController.isInitialized) {
             cameraController.stop()
         }

@@ -60,6 +60,35 @@ docs/
 
 ## Сборка
 
-Проект использует Gradle Kotlin DSL. OpenCV Android AAR подключается через
-Maven Central (`org.opencv:opencv`). Откройте корень репозитория в Android
-Studio (Koala+) и синхронизируйте Gradle.
+Проект использует Gradle Kotlin DSL, Gradle wrapper включён (версия 8.7,
+совместима с Android Gradle Plugin 8.5.2). OpenCV Android AAR подключается
+через Maven Central (`org.opencv:opencv:4.10.0`), остальные зависимости
+(AGP, AndroidX/CameraX, ARCore) — через Google Maven (`google()` в
+`settings.gradle.kts`). Откройте корень репозитория в Android Studio
+(Koala+) и синхронизируйте Gradle — для первой синхронизации нужен обычный
+доступ в интернет к `dl.google.com` и `services.gradle.org`.
+
+Что было проверено явно (не только "похоже на правильный код"):
+- API ArUco-детекции сверено по реальному содержимому `opencv-4.10.0.aar`
+  (`javap` по его `classes.jar`) — старый пакет `org.opencv.aruco.*`
+  отсутствует в этой версии, используется новый `org.opencv.objdetect.*`
+  (`ArucoDetector`/`Objdetect`), код в `ArucoCalibrator.kt` уже обновлён.
+- Обе `.tflite`-модели (keypoint-заглушка и регрессор) реально
+  сгенерированы/обучены в этом окружении и проверены инференсом через
+  `tf.lite.Interpreter` — формы входа/выхода совпадают с тем, что ожидает
+  `KeypointDetector.kt`/`WeightEstimator.kt`.
+- `OpenCVLoader.initLocal()` добавлен в `MainActivity` — без него любой
+  вызов OpenCV (детекция маркера, `cvtColor`, `bitmapToMat`) завершится
+  `UnsatisfiedLinkError`, так как AAR не грузит свою `.so`-библиотеку сам.
+- Ресурсы иконки приложения (`@mipmap/ic_launcher`), на которые ссылался
+  манифест, были добавлены (adaptive icon) — без них aapt2 не слинковал бы
+  ресурсы.
+
+Чего **не удалось** проверить в этой среде: полную компиляцию
+`./gradlew assembleDebug` — песочница этого инструмента блокирует сетевой
+доступ к `dl.google.com` (политика сети), откуда резолвятся сам Android
+Gradle Plugin, AndroidX/CameraX и ARCore. Это ограничение именно этой
+изолированной среды, а не вашей машины — при обычном доступе в интернет в
+Android Studio эти зависимости резолвятся штатно. Если при синхронизации
+в вашей Android Studio всё же появится ошибка — пришлите текст ошибки,
+поправим точечно.
