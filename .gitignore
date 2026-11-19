@@ -12,8 +12,11 @@
 *.keystore
 *.jks
 
-# Trained model weights are large binary artifacts managed outside git history.
-app/src/main/assets/models/*.tflite
+# A real cattle keypoint model, trained on a proper annotated photo dataset,
+# would be a large binary artifact managed outside git history (Git LFS /
+# release asset), not committed here. The small demo/placeholder models
+# currently in app/src/main/assets/models/ (a few KB each, see that
+# directory's README.md) are the exception and are intentionally tracked.
 
 __pycache__/
 *.pyc
